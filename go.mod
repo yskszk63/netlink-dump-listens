@@ -1,4 +1,4 @@
-module github.com/yskszk63/netlink-dump-listens
+module github.com/yskszk63/netlink-list-listens
 
 go 1.19
 
