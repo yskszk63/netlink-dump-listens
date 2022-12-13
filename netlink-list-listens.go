@@ -1,4 +1,4 @@
-package main
+package netlinklistlistens
 
 /*
 #include <linux/netlink.h>
@@ -15,7 +15,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"log"
 	"net/netip"
 	"syscall"
 	"unsafe"
@@ -115,14 +114,4 @@ func ListListens() ([]netip.AddrPort, error) {
 		return nil, err
 	}
 	return ret, nil
-}
-
-func main() {
-	l, err := ListListens()
-	if err != nil {
-		log.Fatal(err)
-	}
-	for _, addr := range l {
-		fmt.Printf("%s\n", addr)
-	}
 }
