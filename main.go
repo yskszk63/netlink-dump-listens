@@ -12,25 +12,67 @@ typedef struct inet_diag_msg inet_diag_msg;
 import "C"
 
 import (
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
+	"net/netip"
 	"syscall"
 	"unsafe"
 
 	"github.com/vishvananda/netlink/nl"
 )
 
-type inet_diag_req_v2 C.inet_diag_req_v2
+type inetDiagReqV2 C.inet_diag_req_v2
 
-func (req *inet_diag_req_v2) Len() int {
-	return C.sizeof_inet_diag_req_v2
-}
-
-func (req *inet_diag_req_v2) Serialize() []byte {
+func (req *inetDiagReqV2) pack() []byte {
 	return (*(*[C.sizeof_inet_diag_req_v2]byte)(unsafe.Pointer(req)))[:]
 }
 
-func inetDiag(cb func(*C.inet_diag_msg)) error {
+func (req *inetDiagReqV2) Len() int {
+	return C.sizeof_inet_diag_req_v2
+}
+
+func (req *inetDiagReqV2) Serialize() []byte {
+	return req.pack()
+}
+
+type inetDiagMsg C.inet_diag_msg
+
+func unpackInetDiagMsg(b []byte) *inetDiagMsg {
+	return (*inetDiagMsg)(unsafe.Pointer(&b[0]))
+}
+
+func htons(v C.ushort) uint16 {
+	b := *(*[2]byte)(unsafe.Pointer(&v))
+	return binary.BigEndian.Uint16(b[:])
+}
+
+func (msg *inetDiagMsg) src() (*netip.AddrPort, error) {
+	src := msg.id.idiag_src
+
+	var ip netip.Addr
+	switch msg.idiag_family {
+	case syscall.AF_INET:
+		{
+			b := *(*[4]byte)(unsafe.Pointer(&src[0]))
+			ip = netip.AddrFrom4(b)
+		}
+	case syscall.AF_INET6:
+		{
+			b := *(*[16]byte)(unsafe.Pointer(&src[0]))
+			ip = netip.AddrFrom16(b)
+		}
+	default:
+		return nil, errors.New(fmt.Sprintf("unexpected family %d", msg.idiag_family))
+	}
+
+	sport := msg.id.idiag_sport
+	addr := netip.AddrPortFrom(ip, htons(sport))
+	return &addr, nil
+}
+
+func inetDiag(cb func(*inetDiagMsg) error) error {
 	families := []C.uchar{
 		syscall.AF_INET,
 		syscall.AF_INET6,
@@ -38,7 +80,7 @@ func inetDiag(cb func(*C.inet_diag_msg)) error {
 
 	for _, family := range families {
 		req := nl.NewNetlinkRequest(nl.SOCK_DIAG_BY_FAMILY, syscall.NLM_F_DUMP)
-		req.AddData(&inet_diag_req_v2{
+		req.AddData(&inetDiagReqV2{
 			sdiag_family:   C.uchar(family),
 			sdiag_protocol: syscall.IPPROTO_TCP,
 			idiag_states:   1 << C.TCP_LISTEN,
@@ -49,32 +91,38 @@ func inetDiag(cb func(*C.inet_diag_msg)) error {
 		}
 
 		for _, data := range res {
-			msg := (*C.inet_diag_msg)(unsafe.Pointer(&data[0]))
-			cb(msg)
+			msg := unpackInetDiagMsg(data)
+			if err := cb(msg); err != nil {
+				return err
+			}
 		}
 	}
 
 	return nil
 }
 
-func dump(msg *C.inet_diag_msg) {
-	sport := C.ntohs(msg.id.idiag_sport)
-
-	ip := make([]byte, 40)
-	ret := C.inet_ntop(C.int(msg.idiag_family), unsafe.Pointer(&msg.id.idiag_src), (*C.char)(unsafe.Pointer(&ip)), C.uint(len(ip)))
-	if ret == nil {
-		ip = []byte("ERROR")
+func ListListens() ([]netip.AddrPort, error) {
+	ret := []netip.AddrPort{}
+	err := inetDiag(func(msg *inetDiagMsg) error {
+		src, err := msg.src()
+		if err != nil {
+			return err
+		}
+		ret = append(ret, *src)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-
-	if msg.idiag_family == syscall.AF_INET {
-		fmt.Printf("%s:%d\n", C.GoString((*C.char)(unsafe.Pointer(&ip))), sport)
-	} else {
-		fmt.Printf("[%s]:%d\n", C.GoString((*C.char)(unsafe.Pointer(&ip))), sport)
-	}
+	return ret, nil
 }
 
 func main() {
-	if err := inetDiag(dump); err != nil {
+	l, err := ListListens()
+	if err != nil {
 		log.Fatal(err)
+	}
+	for _, addr := range l {
+		fmt.Printf("%s\n", addr)
 	}
 }
